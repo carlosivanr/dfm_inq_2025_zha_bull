@@ -1,0 +1,267 @@
+---
+title: "Medical Interpreter Training (draft)"
+date: today
+
+format: 
+  docx:
+    reference-doc: "D:\\dfm_inquiry\\reference_docs\\custom-reference-doc.docx"
+    toc: true
+
+execute: 
+  echo: false
+  warning: false
+---
+
+
+```{r}
+#| eval: false
+# -----------------------------------------------------------------------------
+# Carlos Rodriguez, PhD. CU Anschutz Dept. of Family Medicine
+
+# Date: 
+
+# Description:
+
+# Requirements:(https://github.com/carlosivanr/dfmtbx)
+# 1. Relies on custom functions in the 
+# [dfmtbx] package. May need to set GITHUB_PAT.
+#   - usethis::create_github_token()
+#   - gitcreds::gitcreds_set()
+#   - ctrl + shift + v to paset token
+#   - renv::install("carlosivanr/dfmtbx")
+# 2. RedCap API stored as environmental variable
+#   - Generate API Token in RedCap project
+#   - Save token as system environmental variable
+#   - use the env var in the dfm_tbx function
+# -----------------------------------------------------------------------------
+```
+
+
+```{r}
+# Load libraries
+library(tidyverse)
+library(magrittr, include = "%<>%")
+library(gtsummary)
+library(dfmtbx)
+```
+
+```{r}
+# Demographics come from a separate report and project so the number of 
+# participants in the demographics table may not match up with the number
+# of evaluations in the remainder of the report.
+
+env_var <- "med_int_demographics" # string variable containing RedCap API token
+report_id <- 184648 # numeric variable containing the RedCap report id
+
+# Skeleton to pull RedCAP data as raw, label, and headers
+label <- pull_redcap_report(
+  Sys.getenv(env_var),
+  report_id,
+  "label",
+  "raw",
+  "false"
+)
+
+raw <- pull_redcap_report(
+  Sys.getenv(env_var),
+  report_id,
+  "raw",
+  "raw",
+  "false"
+)
+
+field_text <- pull_redcap_report(
+  Sys.getenv(env_var),
+  report_id,
+  "raw",
+  "label",
+  "false"
+)
+```
+
+# Demographics
+```{r}
+data <- bind_cols(
+  label %>% select(age_v2),
+
+  raw %>% select(
+    gender___1:gender___5,
+    race_eth___1:race_eth___8,
+  ),
+
+  label %>% select(primary_lang_v2:language_num_v2)
+)
+
+data %<>%
+  mutate(across(gender___1:race_eth___8, ~ factor(.x, levels = c(0, 1)))) %>%
+  mutate(across(language_num_v2, ~ factor(.x)))
+
+
+old_col_names <- colnames(data)
+
+# Strip the _v2 suffixes
+new_col_names <- str_replace(old_col_names, "_v2", "")
+
+colnames(data) <- new_col_names
+
+field_labels <- c(
+  "Age", "Female", "Male", "Non-binary", "Prefer to self describe gender", "Choose not to disclose gender",
+  "Asian/Asian American", "Black/African American", "Indigenous North American/American Indian and Alaska Native",
+  "Indigenous other", "Latino/a", "White/Caucasian", "Prefer to self describe race/ethnicity", "Choose not to disclose race/ethnicity", "Primary language", "Number of additional proficient languages"
+)
+```
+
+
+```{r}
+data %>%
+  tbl_summary(
+    type = list("age" ~ "continuous"),
+    label = list(
+      "age" ~ "Age",
+      "gender___1" ~ field_labels[2],
+      "gender___2" ~ field_labels[3],
+      "gender___3" ~ field_labels[4],
+      "gender___4" ~ field_labels[5],
+      "gender___5" ~ field_labels[6],
+      "race_eth___1" ~ field_labels[7],
+      "race_eth___2" ~ field_labels[8],
+      "race_eth___3" ~ field_labels[9],
+      "race_eth___4" ~ field_labels[10],
+      "race_eth___5" ~ field_labels[11],
+      "race_eth___6" ~ field_labels[12],
+      "race_eth___7" ~ field_labels[13],
+      "race_eth___8" ~ field_labels[14],
+      "primary_lang" ~ field_labels[15],
+      "language_num" ~ field_labels[16]
+    ),
+    value = list(
+      "gender___1" ~ 1,
+      "gender___2" ~ 1,
+      "gender___3" ~ 1,
+      "gender___4" ~ 1,
+      "gender___5" ~ 1,
+      "race_eth___1" ~ 1,
+      "race_eth___2" ~ 1,
+      "race_eth___3" ~ 1,
+      "race_eth___4" ~ 1,
+      "race_eth___5" ~ 1,
+      "race_eth___6" ~ 1,
+      "race_eth___7" ~ 1,
+      "race_eth___8" ~ 1
+
+    )
+  )
+```
+
+# Evaluations
+
+```{r}
+env_var <- "med_int_evals" # string variable containing RedCap API token
+report_id <- 184959 # numeric variable containing the RedCap report id
+
+# Skeleton to pull RedCAP data as raw, label, and headers
+evals_label <- pull_redcap_report(
+  Sys.getenv(env_var),
+  report_id,
+  "label",
+  "raw",
+  "false"
+)
+
+evals_raw <- pull_redcap_report(
+  Sys.getenv(env_var),
+  report_id,
+  "raw",
+  "raw",
+  "false"
+)
+
+evals_field_text <- pull_redcap_report(
+  Sys.getenv(env_var),
+  report_id,
+  "raw",
+  "label",
+  "false"
+)
+```
+
+
+## Evaluator and resident
+```{r}
+evals_label %>%
+  select(evaluator, resident) %>%
+  tbl_summary()
+```
+
+# Evaluator feedback
+```{r}
+evals_label %>%
+  select(resident, date, comments) %>%
+  drop_na() %>%
+  format_gt_tbl()
+```
+
+## Evaluation track, setting, and interpreter type
+```{r}
+evals_label %>%
+  select(track, setting, interp) %>% #, firstperson, statements) %>%
+  tbl_summary()
+```
+
+## How consistently did the learner speak with the patient in the first person
+```{r}
+evals_label %<>%
+  mutate(
+    across(firstperson:jargon, ~ factor(.x, levels = c(
+        "Always",
+        "Mostly",
+        "Sometimes",
+        "Rarely",
+        "Never"))))
+```
+
+```{r}
+evals_label %>%
+  select(firstperson) %>%
+  tbl_summary()
+```                                                                                                                       
+
+## How consistently did the learner use short, digestible statements?
+```{r}
+evals_label %>%
+  select(statements) %>%
+  tbl_summary()
+```
+
+## How consistently did the learner avoid medical jargon?
+```{r}
+evals_label %>%
+  select(jargon) %>%
+  tbl_summary()
+```
+
+## Did the learner introduce themselves to the interpreter?
+```{r}
+evals_label %<>%
+  mutate(across(intro_self:intro_interp, ~ factor(.x, levels = c("No", "Yes"))))
+```
+
+```{r}
+evals_label %>%
+  select(intro_self) %>%
+  tbl_summary(type = everything() ~ "categorical")
+```                                                                  
+
+## Did the learner allow the interpreter to introduce themselves?
+```{r}
+evals_label %>%
+  select(intro_interp) %>%
+  tbl_summary(type = everything() ~ "categorical")
+```
+
+## Some encounters involve special context that an interpreter may not be able to discern over the phone, such as a patient who is hard of hearing or has a hoarse voice, multiple family members or providers in the room, or a sensitive or difficult conversation. If applicable to this encounter, did the learner introduce the context to the interpreter?
+```{r}
+evals_label %>%
+  select(context) %>%
+  tbl_summary(type = everything() ~ "categorical")
+```

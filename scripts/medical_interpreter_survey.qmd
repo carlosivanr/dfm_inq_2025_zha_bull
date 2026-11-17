@@ -1,0 +1,456 @@
+---
+title: "Medical Interpreter Training Survey Results (draft)"
+date: today
+
+format: 
+  docx:
+    reference-doc: "D:\\dfm_inquiry\\reference_docs\\custom-reference-doc.docx"
+    toc: true
+
+execute: 
+  echo: false
+  warning: false
+---
+
+
+```{r}
+#| eval: false
+# -----------------------------------------------------------------------------
+# Carlos Rodriguez, PhD. CU Anschutz Dept. of Family Medicine
+
+# Date: 
+
+# Description:
+
+# Requirements:(https://github.com/carlosivanr/dfmtbx)
+# 1. Relies on custom functions in the 
+# [dfmtbx] package. May need to set GITHUB_PAT.
+#   - usethis::create_github_token()
+#   - gitcreds::gitcreds_set()
+#   - ctrl + shift + v to paset token
+#   - renv::install("carlosivanr/dfmtbx")
+# 2. RedCap API stored as environmental variable
+#   - Generate API Token in RedCap project
+#   - Save token as system environmental variable
+#   - use the env var in the dfm_tbx function
+# -----------------------------------------------------------------------------
+```
+
+
+```{r}
+# Load libraries
+library(tidyverse)
+library(magrittr, include = "%<>%")
+library(gtsummary)
+library(dfmtbx)
+```
+
+```{r}
+env_var <- "med_int_survey" # string variable containing RedCap API token
+
+report_id <- 202713 # numeric variable containing the RedCap report id
+
+# Skeleton to pull RedCAP data as raw, label, and headers
+label <- pull_redcap_report(
+  Sys.getenv(env_var),
+  report_id,
+  "label",
+  "raw",
+  "false"
+)
+
+raw <- pull_redcap_report(
+  Sys.getenv(env_var),
+  report_id,
+  "raw",
+  "raw",
+  "false"
+)
+
+field_text <- pull_redcap_report(
+  Sys.getenv(env_var),
+  report_id,
+  "raw",
+  "label",
+  "false"
+)
+```
+
+```{r}
+# Merge in numeric columns
+column_order <- label %>% names()
+
+numeric_columns <- raw %>%
+  select(starts_with("conf"), starts_with("gender"), starts_with("race_eth"), -gender_desc)
+  
+numeric_col_names <- numeric_columns %>%
+  names()
+```
+
+```{r}
+data <- label %>%
+  select(-(all_of(numeric_col_names))) %>%
+  bind_cols(., numeric_columns) %>%
+  select(all_of(column_order))
+```
+
+```{r}
+# Harmonize the pre and post test column names
+# Two possible ways of doing this. Use the redcap event and filter out the separate sections, then stack
+# Could also possibly coalesce 4x
+
+pre_conf <- data %>%
+  filter(redcap_event_name == "Baseline") %>%
+  select(record_id, redcap_event_name, conf_1, conf_2, conf_3, conf_4)
+
+post_conf <- data %>%
+  filter(redcap_event_name %in% c("Follow Up", "Follow Up 2") %>%
+  select(record_id, redcap_event_name, conf_12, conf_22, conf_32, conf_42)
+
+names(post_conf) <- c("record_id", "redcap_event_name", "conf_1", "conf_2", "conf_3", "conf_4")
+
+conf <- bind_rows(pre_conf, post_conf)
+
+data %<>%
+  select(-starts_with("conf"))
+
+data <- data %>% left_join(., conf, by = c("record_id", "redcap_event_name"))
+```
+
+```{r}
+# Age
+data %<>%
+  mutate(age = as.numeric(age)) 
+
+# Gender
+# No on selected more than one gender
+n_mt1_gen <- data %>%
+  filter(redcap_event_name == "Baseline") %>%
+  mutate(mt1_gen = rowSums(across(gender___1:gender___5), na.rm = TRUE)) %>%
+  filter(mt1_gen > 1) %>% 
+  nrow()
+
+# Create gender
+data %<>%
+  mutate(gender = ifelse(
+    gender___1 == 1, "Female",
+    ifelse(gender___2 == 1, "Male",
+    ifelse(gender___3 == 1, "Non-binary", 
+    ifelse(gender___4 == 1, "Prefer to self-describe",
+    ifelse(gender___5 == 1, "Choose not to disclose", "Unknown"))))
+  ))
+
+# Create race/ethnicity
+# One person selected more than one race
+data %<>%
+  mutate(mt1_race = rowSums(across(race_eth___1:race_eth___8), na.rm = TRUE))
+
+n_mt1_race <- data %>%
+  filter(mt1_race > 1) %>% 
+  nrow()
+
+data %<>%
+  mutate(
+    race_eth___1 = ifelse(race_eth___1 == 1, "Asian", NA),
+    race_eth___2 = ifelse(race_eth___2 == 1, "Black", NA),
+    race_eth___3 = ifelse(race_eth___3 == 1, "Indigenous North American", NA),
+    race_eth___4 = ifelse(race_eth___4 == 1, "Indegenous other", NA),
+    race_eth___5 = ifelse(race_eth___5 == 1, "Latino/a" , NA),
+    race_eth___6 = ifelse(race_eth___6 == 1, "White/Caucasian", NA),
+    race_eth___7 = ifelse(race_eth___7 == 1, "Prefer to self describe", NA),
+    race_eth___8 = ifelse(race_eth___8 == 1, "Choose not to disclose", NA)
+  ) %>%
+  mutate(race_eth = coalesce(
+    race_eth___1,
+    race_eth___2,
+    race_eth___3,
+    race_eth___4,
+    race_eth___5,
+    race_eth___6,
+    race_eth___7,
+    race_eth___8
+  )) %>%
+  mutate(race_eth = ifelse(mt1_race > 1, "More than one race", race_eth))
+
+# Reverse code the conf_* questions so that higher values represent
+# better outcomes
+data %<>%
+  # select(starts_with("conf")) %>%
+  mutate(across(starts_with("conf"), ~ (.x - 6) * -1))
+```
+
+# Demographics
+```{r}
+data %>%
+  filter(redcap_event_name == "Baseline") %>%
+  select(age, gender, race_eth, primary_lang, language_num) %>%
+  tbl_summary(
+    type = list(age ~ "continuous"),
+    statistic = list(age ~ "{mean} ({sd})"),
+    label = list(
+      age ~ "Age",
+      gender ~ "Gender",
+      race_eth ~ "Race/Ethnicity",
+      primary_lang ~ "Primary Language",
+      language_num ~ "Proficient in one additional language"
+    )
+  )
+```
+
+# Baseline Only Questions
+
+## Do you have language proficiency in a language other than English? Being proficient in a language means that you are able to speak accurately, understand other speakers accurately, and are rarely hindered by your language ability in communication.
+```{r}
+data %>%
+  filter(redcap_event_name == "Baseline") %>%
+  select(second_language) %>%
+  mutate(second_language = factor(second_language, levels = c("Yes", "No"))) %>%
+  tbl_summary(
+    type = everything() ~ "categorical"
+  )
+```
+
+## In what other language are you proficient?
+```{r}
+data %>%
+  filter(second_language == "Yes") %>%
+  select(language) %>%
+  tbl_summary()
+```
+
+## Are you a qualified bilingual provider?
+```{r}
+data %>%
+  filter(second_language == "Yes") %>%
+  select(qual_bilingual) %>%
+  mutate(qual_bilingual = factor(qual_bilingual, levels = c("Yes", "No"))) %>%
+  tbl_summary(
+    type = everything() ~ "categorical"
+  )
+```
+
+## I have overestimated my language ability/fluency in the past.
+```{r}
+data %>%
+  filter(second_language == "Yes") %>%
+  select(overestimate) %>%
+  mutate(overestimate = factor(overestimate, levels = c(
+    "Often", "Sometimes", "Rarely", "Never"))) %>%
+  tbl_summary(
+    type = everything() ~ "categorical"
+  )
+```
+
+## I worked with certified medical interpreters in the past.
+```{r}
+data %>%
+  filter(redcap_event_name == "Baseline") %>%
+  select(worked_cert) %>%
+  mutate(worked_cert = factor(worked_cert, levels = c(
+    "Often", "Sometimes", "Rarely", "Never"))) %>%
+  tbl_summary(
+    type = everything() ~ "categorical"
+  )
+```
+
+
+## I have had prior training on working with medical interpreters.
+```{r}
+data %>%
+  filter(redcap_event_name == "Baseline") %>%
+  select(prior_training) %>%
+  mutate(prior_training = factor(prior_training, levels = c("Yes", "No"))) %>%
+  tbl_summary(
+    type = everything() ~ "categorical"
+  )
+```
+
+## Please list at least 2 best practices for working with medical interpreters that this resident followed during this interaction:
+```{r}
+data %>% 
+  # filter(redcap_event_name == "Follow Up") %>%
+  select(best_pracs_comment) %>%
+  drop_na() %>%
+  format_gt_tbl()
+```
+
+## Please list at least 2 best practices for working with medical interpreters that this resident did not employ but should have during this interaction:
+```{r}
+data %>% 
+  select(best_pracs_comment_2) %>%
+  drop_na() %>%
+  format_gt_tbl()
+```
+
+## Self-Confidence (Baseline vs Follow up)
+```{r, warning = FALSE}
+pre_post_data <- data %>%
+  select(record_id, redcap_event_name, starts_with("conf"))
+
+dvs <- c("conf_1", "conf_2", "conf_3", "conf_4")
+
+# Model fitting function. This function is designed to utilize the map2() 
+# function to loop through a set of data frame and dependent variable 
+# pairs and fit a linear mixed effect model.
+fit_model <- function(dv) {
+  
+  form <- as.formula(paste0(dv, " ~ redcap_event_name + (1 | record_id)"))
+
+  # df %<>%
+  #   mutate(timepoint = factor(timepoint, levels = c("pre", "post")))
+
+  # Linear mixed model for the tiib_pd data
+  model <- lmerTest::lmer(form, data = pre_post_data)
+
+  output_tbl <- broom.mixed::tidy(model, conf.int = FALSE)
+
+  # extract the p-value from the comparison of post to pre
+  p_val <- str_c("p = ", output_tbl %>% 
+    filter(term %in% c("redcap_event_nameFollow Up", "redcap_event_nameFollow Up 2")) %>% 
+    pull(p.value) %>%
+    round(4))
+
+  # emmeans
+  emms_tbl <- emmeans::emmeans(model, ~ redcap_event_name) %>% as_tibble()
+
+  # extract the means and se
+  emms_tbl %<>%
+    mutate(across(emmean:SE, ~ (round(.x, 2)))) %>%
+    mutate(m_se = str_c(format(emmean, nsmall = 2), " (", SE, ")")) %>%
+    mutate(p_val = c(" ", p_val) )
+
+  # determine the y value for vjust
+  emms_tbl %<>%
+    mutate(y = emmean + SE)
+
+
+  # plot
+  plt <- emms_tbl %>%
+  ggplot(aes(x=redcap_event_name, y=emmean)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = emmean - SE, ymax = emmean + SE), width = 0.10) +
+  labs(x = "Timepoint", y = "Confidence (mean +/- se)") +
+  geom_text(
+    aes(label = sprintf(m_se)),
+    hjust = -.25
+  ) +
+  geom_text(
+    aes(label = p_val),
+    hjust = -.25,
+    vjust = 2
+  ) +
+  scale_y_continuous(limits = c(3, 5)) +
+  theme_minimal()
+
+  # Revert back to original emmeans table without the added variables for 
+  # plotting 
+  
+  emms_tbl <- emmeans::emmeans(model, ~ redcap_event_name) %>% as_tibble()
+
+  output <- list(
+    output_tbl,
+    emms_tbl,
+    plt
+  )
+}
+
+all_output <- map(dvs, fit_model)
+```
+
+<!-- Conf_1 -->
+## How confident are you in your ability to work with medical interpreters when caring for patients who prefer a language other than English?
+```{r}
+all_output[[1]][[1]] %>% format_gt_tbl()
+```
+
+<br>
+
+```{r}
+all_output[[1]][[2]] %>% format_gt_tbl()
+```
+
+<br>
+
+```{r}
+all_output[[1]][[3]] + labs(title = "Confidence in working with interpreters")
+```
+
+<!-- Conf_2 -->
+## How confident are you in correctly identifying when an interpreter should be used during a patient encounter?
+```{r}
+all_output[[2]][[1]] %>% format_gt_tbl()
+```
+
+<br>
+
+
+```{r}
+all_output[[2]][[2]] %>% format_gt_tbl()
+```
+
+<br>
+
+```{r, warnign = FALSE}
+all_output[[2]][[3]] + labs(title = "Confidence in identifying situations")
+```
+
+<!-- Conf_3 -->
+## How confident are you in your knowledge of the best practices for working with a medical interpreter?
+```{r}
+all_output[[3]][[1]] %>% format_gt_tbl()
+```
+
+<br>
+```{r}
+all_output[[3]][[2]] %>% format_gt_tbl()
+```
+
+<br>
+
+```{r}
+all_output[[3]][[3]] + labs(title = "Confidence in knowledge of interpreter best practices")
+```
+
+<!-- Conf_4 -->
+## How confident are you in your ability to consistently implement the best practices for working with a medical interpreter?
+```{r}
+all_output[[4]][[1]] %>% format_gt_tbl()
+```
+
+<br>
+
+```{r}
+all_output[[4]][[2]] %>% format_gt_tbl()
+```
+
+<br>
+
+```{r}
+all_output[[4]][[3]] + labs(title = "Confidence in implementing interpreter best practices")
+```
+
+
+# Follow up only questions
+
+## Please list at least 2 best practices for working with medical interpreters that this resident followed during this interaction:
+```{r}
+data %>% 
+  select(best_pracs_comment2) %>%
+  drop_na() %>%
+  format_gt_tbl()
+```
+
+
+## Please list at least 2 best practices for working with medical interpreters that this resident did not employ but should have during this interaction:
+```{r}
+data %>% 
+  select(best_pracs_comment_22) %>%
+  drop_na() %>%
+  format_gt_tbl()
+```
+
+
+```{r}
+# Results summary for abstract
+# Linear mixed-effects models were used to examine changes in confidence scores from pre- to post-training. Models included fixed effects for time (pre vs. post) and a random intercept for participant to account for repeated measurements. Model results indicated significant pre-to-post improvements in conf1 (b = 0.47, 95% CI [0.18, 0.75], p = 0.004), conf3 (b = 0.73, 95% CI [0.34, 1.12], p = 0.001), and conf4 (b = 0.60, 95% CI [0.25, 0.95], p = 0.003). There was no evidence of a pre-to-post change in conf2 (b = 0.07, 95% CI [-0.38, 0.51],  p = 0.751).
+```
